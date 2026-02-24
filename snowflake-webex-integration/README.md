@@ -83,8 +83,8 @@ Login -> **My Apps -> Create New App -> Integration**
 
 After saving you get:
 
-- **Client ID** - use as `WEBEX_CLIENT_ID` in `00.js`
-- **Client Secret** - use as `WEBEX_CLIENT_SECRET` in `00.js`
+- **Client ID** - use as `WEBEX_CLIENT_ID` in `main.js`
+- **Client Secret** - use as `WEBEX_CLIENT_SECRET` in `main.js`
 
 ---
 
@@ -103,7 +103,7 @@ npm install express axios
 
 ---
 
-## App code (00.js)
+## App code (main.js)
 
 The app provides **two separate login flows** with a **shared `/callback`** route.
 The Snowflake flow implements full **PKCE (S256)** as required by `OAUTH_ENFORCE_PKCE = TRUE`.
@@ -237,7 +237,7 @@ app.listen(PORT, () => {
 ## Start the app
 
 ```bash
-node 00.js
+node main.js
 ```
 
 ## Test URLs
