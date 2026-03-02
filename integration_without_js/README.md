@@ -1,113 +1,124 @@
-# Snowflake ↔ Webex Integration (No Middle Layer)
+# Webex Bot powered by Snowflake Intelligence (No Middle Layer)
 
-Direct integration using **Snowflake External Access Integration** — no Node.js, no Express, no JavaScript.
+A Webex Bot that answers user questions using **Snowflake Intelligence (Cortex)** — with zero middleware.
 
-Snowflake calls Webex APIs natively via Python UDFs and stored procedures.
+**User experience:** You ask a question in Webex → the bot replies with the answer. That's it.  
+**Behind the scenes:** Snowflake reads Webex messages, runs them through Cortex AI, and posts the answer back.
 
 ---
 
-## Architecture
+## How it looks
 
 ```
-Snowflake SQL / UDF / Stored Procedure
-        |
-        | HTTPS (via External Access Integration)
-        v
-  webexapis.com/v1/*
+You (in Webex):     "What were last month's sales?"
+Bot (in Webex):     "Last month's total sales were $1.2M, a 15% increase over..."
 ```
 
-No intermediate server. No PKCE management. No callback routes.
+The user only sees Webex. They don't know Snowflake Intelligence is generating the answer.
 
 ---
 
-## Setup (run in order)
+## How it works (behind the scenes)
 
-### 1. Network rule, secrets & integration
+```
+┌──────────────────┐           ┌──────────────────────────────────┐
+│  Webex Room      │           │  Snowflake                       │
+│                  │  poll     │                                  │
+│  User: "last     │ ◄──────  │  Scheduled Task (every 1 min)    │
+│   month sales?"  │           │    │                             │
+│                  │           │    ▼                             │
+│  Bot: "Sales     │  reply    │  Snowflake Intelligence (Cortex) │
+│   were $1.2M..." │ ──────►  │    generates the answer          │
+└──────────────────┘           └──────────────────────────────────┘
+```
 
-Run [01_network_and_secrets.sql](01_network_and_secrets.sql) in Snowflake.
-
-**Before running**, update the `webex_bearer_token` secret with a valid Webex access token.  
-Get one from: https://developer.webex.com → Log in → copy your test token, or complete the OAuth flow once.
-
-### 2. Create UDFs & procedures
-
-Run [02_webex_functions.sql](02_webex_functions.sql) in Snowflake.
-
-This creates:
-
-| Function / Procedure | Purpose |
-|---|---|
-| `call_webex_api(endpoint)` | Generic GET to any `/v1/{endpoint}` |
-| `call_webex_api_post(endpoint, body)` | Generic POST with JSON body |
-| `send_webex_message(room_id, text)` | Send message to a room |
-| `send_webex_message_to_email(email, text)` | Send direct message by email |
-| `webex_whoami()` | Get your Webex profile |
-| `webex_list_rooms()` | List all Webex rooms |
-
-### 3. Test
-
-Run examples from [03_usage_examples.sql](03_usage_examples.sql).
+No JS server. No Express. No webhook endpoint. No deployment needed.
 
 ---
 
-## Credentials
+## Why SQL?
 
-All secrets are stored in the `.env` file (never committed to Git).  
-Copy `.env.example` to `.env` and fill in your values:
+Snowflake can't call external APIs (like Webex) by default. We need 3 small SQL steps to enable it:
+
+1. **Allow outbound HTTPS** to webexapis.com (network rule)
+2. **Store the bot token** securely (Snowflake secret)
+3. **Create one stored procedure** that reads messages, asks Cortex, and replies
+
+That's the entire "integration". After that, a scheduled task runs it automatically.
+
+---
+
+## Setup
+
+### Step 0: Get your credentials
+
+1. **Create a Webex Bot** at https://developer.webex.com → My Apps → Create Bot
+   - Copy the **Bot Token** (it never expires)
+2. **Get your Room ID**: Add the bot to a Webex room, then find the room ID from the Webex app URL or API
+3. Copy `.env.example` → `.env` and paste your values:
 
 ```bash
 cp .env.example .env
 ```
 
-| Variable | Source |
+| `.env` variable | What it is |
 |---|---|
-| `WEBEX_CLIENT_ID` | From https://developer.webex.com → My Apps |
-| `WEBEX_CLIENT_SECRET` | From https://developer.webex.com → My Apps |
-| `WEBEX_BEARER_TOKEN` | Personal access token or OAuth access_token |
+| `WEBEX_BEARER_TOKEN` | Your Webex Bot token |
+| `WEBEX_ROOM_ID` | The room the bot monitors |
+| `CORTEX_MODEL` | AI model (e.g. `mistral-large2`) |
 
-> **Note:** You still need a valid Webex **access token** (Bearer token) for the API calls.  
-> The Client ID/Secret are stored as secrets in case you want to implement token refresh inside Snowflake later.
+### Step 1: Open Snowflake gateway to Webex
 
----
+Run [01_network_and_secrets.sql](01_network_and_secrets.sql) — paste your bot token from `.env` into `SECRET_STRING`.
 
-## Token Refresh (Optional)
+### Step 2: Create the bot
 
-To auto-refresh the Webex token from within Snowflake, you can create a stored procedure:
+Run [02_webex_functions.sql](02_webex_functions.sql) — paste your room ID from `.env` into `<WEBEX_ROOM_ID>`.
+
+### Step 3: Test it
+
+Send a message in your Webex room, then run manually:
 
 ```sql
-CREATE OR REPLACE PROCEDURE refresh_webex_token(refresh_token_value STRING)
-RETURNS VARIANT
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
-HANDLER = 'refresh'
-EXTERNAL_ACCESS_INTEGRATIONS = (webex_external_access)
-SECRETS = ('cid' = webex_client_id, 'csecret' = webex_client_secret)
-PACKAGES = ('requests')
-AS $$
-import requests, _snowflake
+CALL run_webex_bot('<WEBEX_ROOM_ID>', 'mistral-large2', 'You are a helpful AI assistant.');
+```
 
-def refresh(session, refresh_token_value):
-    resp = requests.post('https://webexapis.com/v1/access_token', data={
-        'grant_type': 'refresh_token',
-        'client_id': _snowflake.get_generic_secret_string('cid'),
-        'client_secret': _snowflake.get_generic_secret_string('csecret'),
-        'refresh_token': refresh_token_value
-    })
-    data = resp.json()
-    # Update the stored secret with the new token
-    session.sql(f"ALTER SECRET webex_bearer_token SET SECRET_STRING = '{data['access_token']}'").collect()
-    return data
-$$;
+You should see the bot reply in Webex.
+
+### Step 4: Activate the bot (runs forever)
+
+```sql
+ALTER TASK webex_bot_task RESUME;
+```
+
+Now the bot checks for new messages every minute and replies automatically.
+
+Stop it anytime:
+```sql
+ALTER TASK webex_bot_task SUSPEND;
 ```
 
 ---
 
-## Comparison with the old approach
+## What gets created in Snowflake
 
-| | Old (Node.js middle layer) | New (native Snowflake) |
+| Object | What it does |
+|---|---|
+| `webex_bearer_token` | Secret — stores your bot token securely |
+| `webex_external_access` | Integration — allows Snowflake to call Webex API |
+| `run_webex_bot()` | Procedure — the entire bot logic in one procedure |
+| `webex_bot_task` | Task — runs the bot every 1 minute |
+| `webex_processed_messages` | Table — tracks answered messages (no duplicates) |
+
+---
+
+## Comparison: JS middle layer vs this approach
+
+| | With JS (`snowflake-webex-integration/`) | Without JS (this directory) |
 |---|---|---|
-| Runtime | Node.js + Express + axios | Snowflake Python UDF |
-| Infrastructure | Separate server (localhost:3000) | None — runs inside Snowflake |
-| Auth complexity | PKCE, callback routes, state mgmt | Bearer token stored as secret |
-| Maintenance | npm dependencies, server uptime | Zero — SQL only |
-| Scheduling | External cron / orchestrator | Snowflake Tasks |
+| What you deploy | Node.js server + Express | Nothing — just SQL in Snowflake |
+| Bot logic runs in | Your local machine / server | Snowflake itself |
+| Dependencies | npm, axios, dotenv, express | None |
+| Server needed? | Yes (localhost:3000) | No |
+| Scheduling | You keep the server running | Snowflake Task (automatic) |
+| Maintenance | Update deps, restart on crash | Zero |
