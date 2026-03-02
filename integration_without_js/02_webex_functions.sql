@@ -45,7 +45,7 @@ def run_bot(session, room_id, cortex_model, system_prompt):
     token = _snowflake.get_generic_secret_string('token')
     headers = {'Authorization': f'Bearer {token}'}
 
-    # Who am I? (so we don't reply to our own messages)
+    # Who am I? so we do not reply to our own messages
     me = requests.get('https://webexapis.com/v1/people/me', headers=headers).json()
     bot_id = me.get('id', '')
 
