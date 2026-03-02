@@ -20,22 +20,25 @@ CREATE OR REPLACE NETWORK RULE webex_api_network_rule
 -- ---------------------------------------------------------------------------
 
 -- Webex OAuth Client ID (from developer.webex.com)
+-- Replace <WEBEX_CLIENT_ID> with the value from your .env file
 CREATE OR REPLACE SECRET webex_client_id
   TYPE = GENERIC_STRING
-  SECRET_STRING = 'Ca1ade54764cef93479d72fb4172db7f1573bfa4861645830ff7c1abe4a507df4';
+  SECRET_STRING = '<WEBEX_CLIENT_ID>';  -- paste value from .env → WEBEX_CLIENT_ID
 
 -- Webex OAuth Client Secret (from developer.webex.com)
+-- Replace <WEBEX_CLIENT_SECRET> with the value from your .env file
 CREATE OR REPLACE SECRET webex_client_secret
   TYPE = GENERIC_STRING
-  SECRET_STRING = 'e6d0c2a731692e720d91a70a497039d85f34763bc7d62e55d23a254140c14a14';
+  SECRET_STRING = '<WEBEX_CLIENT_SECRET>';  -- paste value from .env → WEBEX_CLIENT_SECRET
 
 -- Webex Bearer Token (replace with a valid access_token after OAuth)
 -- You can obtain this by completing the Webex OAuth flow once at:
 --   https://developer.webex.com/docs/getting-your-personal-access-token
 -- or using the "Test" token from developer.webex.com (valid 12 hours)
+-- Replace <WEBEX_BEARER_TOKEN> with the value from your .env file
 CREATE OR REPLACE SECRET webex_bearer_token
   TYPE = GENERIC_STRING
-  SECRET_STRING = 'YzI0YjNlZTMtNTk1Ni00ZmRiLTk2ZjEtZWY5MDc0N2EwY2U5YTI4NWMzN2MtODVl_P0A1_6dc8d78d-8b30-4860-a0cf-2c9415a40317';
+  SECRET_STRING = '<WEBEX_BEARER_TOKEN>';  -- paste value from .env → WEBEX_BEARER_TOKEN
 
 -- ---------------------------------------------------------------------------
 -- 3. External Access Integration — ties network rule + secrets together

@@ -52,13 +52,18 @@ Run examples from [03_usage_examples.sql](03_usage_examples.sql).
 
 ## Credentials
 
-Sourced from the original `.env`:
+All secrets are stored in the `.env` file (never committed to Git).  
+Copy `.env.example` to `.env` and fill in your values:
 
-| Credential | Source |
+```bash
+cp .env.example .env
+```
+
+| Variable | Source |
 |---|---|
-| Webex Client ID | `Ca1ade54764cef93479d72fb4172db7f1573bfa4861645830ff7c1abe4a507df4` |
-| Webex Client Secret | `e6d0c2a731692e720d91a70a497039d85f34763bc7d62e55d23a254140c14a14` |
-| Snowflake Account | `lqb16037.snowflakecomputing.com` |
+| `WEBEX_CLIENT_ID` | From https://developer.webex.com → My Apps |
+| `WEBEX_CLIENT_SECRET` | From https://developer.webex.com → My Apps |
+| `WEBEX_BEARER_TOKEN` | Personal access token or OAuth access_token |
 
 > **Note:** You still need a valid Webex **access token** (Bearer token) for the API calls.  
 > The Client ID/Secret are stored as secrets in case you want to implement token refresh inside Snowflake later.
