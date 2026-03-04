@@ -19,7 +19,8 @@ CREATE OR REPLACE NETWORK RULE webex_api_network_rule
 -- 2. Store your Webex Bot token (paste the real value from your .env file)
 CREATE OR REPLACE SECRET webex_bearer_token
   TYPE = GENERIC_STRING
-  SECRET_STRING = '<WEBEX_BEARER_TOKEN>';  -- paste from .env
+  SECRET_STRING = 'WEBEX_BEARER_TOKEN';  -- paste from .env
+-- https://developer.webex.com/docs/getting-your-personal-access-token
 
 -- 3. Tie them together
 CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION webex_external_access
