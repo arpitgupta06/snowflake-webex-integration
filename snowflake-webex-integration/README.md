@@ -2,7 +2,7 @@
 
 A Webex Bot powered by **Snowflake Cortex AI** via a Node.js middleware layer.
 
-**User experience:** Send a message to the bot in Webex → it replies with an AI-generated answer from Snowflake Cortex.
+**User experience:** Send a message to the bot in Webex → bot authenticates you with Snowflake → replies with an AI-generated answer using your own Snowflake role and warehouse.
 
 ---
 
@@ -14,13 +14,22 @@ User (Webex)
      v
 Webex Bot (Webhook — POST /webhook)
      |
+     +-- Is user authenticated? ──No──> Send Snowflake login link (question queued)
+     |                                         |
+     |                                         v
+     |                                  User signs in (/login/snowflake → /callback)
+     |                                         |
+     |                                  Token stored → queued question answered automatically
+     |
+     Yes (token valid / refreshed)
+     |
      v
 Node.js App (http://localhost:3000)
      |
      +-- OAuth token exchange (/login/webex, /login/snowflake)
      |
      v
-Snowflake Cortex / Intelligence API
+Snowflake Cortex — runs as the authenticated user (their role + default warehouse)
      |
      v
 Answer returned to Webex Bot → User
@@ -73,31 +82,24 @@ SELECT SYSTEM$SHOW_OAUTH_CLIENT_SECRETS('WEBEX_OAUTH');
 
 ---
 
-# Part 2 — Snowflake: Bot Service Account & Cortex Access
+# Part 2 — Snowflake: Grant Cortex Access
+
+No shared service account is needed. Each Webex user authenticates with their own Snowflake credentials. Their own role and default warehouse are used for every query.
 
 Run as `ACCOUNTADMIN`:
 
 ```sql
 USE ROLE ACCOUNTADMIN;
 
--- Grant Cortex access to ALL users in the org
+-- Grant Cortex access to all users via the PUBLIC role
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE PUBLIC;
 
--- Create dedicated service account for the Node.js bot
-CREATE USER webex_bot_user
-  PASSWORD          = 'your_strong_password'
-  DEFAULT_ROLE      = PUBLIC
-  DEFAULT_WAREHOUSE = DBT_HANDSON
-  MUST_CHANGE_PASSWORD = FALSE
-  COMMENT = 'Service account for Webex Cortex bot';
-
-GRANT ROLE PUBLIC TO USER webex_bot_user;
-
--- Grant warehouse access
+-- Ensure users' roles have warehouse access
 GRANT USAGE ON WAREHOUSE DBT_HANDSON TO ROLE PUBLIC;
 ```
 
-> `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE PUBLIC` gives every Snowflake user in the org access to Cortex — no per-user setup needed.
+> **Dev:** users sign in with their Snowflake username and password through the OAuth consent page.
+> **Prod:** replace username/password with your org's SSO / MFA — no code changes needed, the OAuth flow handles it.
 
 ### Optional: Map Snowflake users to Webex identity
 
@@ -192,48 +194,54 @@ SNOWFLAKE_TOKEN_URL=https://lqb16037.snowflakecomputing.com/oauth/token-request
 # App settings
 PORT=3000
 REDIRECT_URI=http://localhost:3000/callback
+# Dev: set to your ngrok URL so login links in Webex DMs are browser-accessible
+# Prod: set to your public app URL
+APP_BASE_URL=https://<your-ngrok-or-prod-url>
 
 # Webex Bot (developer.webex.com → My Apps → Bot)
 WEBEX_BOT_TOKEN=...
 BOT_ID=...              # Person ID from GET /people/me — NOT the Application ID
 
-# Snowflake service account
+# Snowflake connection context
+# No service account — each user authenticates with their own credentials
 SNOWFLAKE_ACCOUNT=lqb16037
-SNOWFLAKE_USERNAME=webex_bot_user
-SNOWFLAKE_PASSWORD=...
 SNOWFLAKE_DATABASE=AI_DB
 SNOWFLAKE_SCHEMA=PUBLIC
-SNOWFLAKE_WAREHOUSE=DBT_HANDSON
 
 # Cortex model (mistral-large2, llama3.1-70b, snowflake-arctic)
 CORTEX_MODEL=mistral-large2
 ```
-### Changes done in `main.js`
+
+### How `main.js` works
 
 ```
-1. Added snowflake-sdk — imported and configured a Snowflake connection using service account credentials from .env (webex_bot_user)
+1. Startup — Express starts directly. No Snowflake pre-connect needed.
 
-2. connectSnowflake() — connects to Snowflake on startup and explicitly runs USE  
-  WAREHOUSE in the session (SDK config alone doesn't apply it)
+2. userTokenStore (Map) — holds each user's Snowflake OAuth token in memory,
+   keyed by Webex personId: { access_token, refresh_token, expires_at, username }
 
-3. askCortex() — executes SNOWFLAKE.CORTEX.COMPLETE() via SQL, takes the user's
-  question as input, returns the AI-generated answer
+3. pendingQuestions (Map) — if a user asks a question before authenticating,
+   it's stored here. Answered automatically after login — no retyping needed.
 
-4. Added express.json() middleware — required to parse incoming Webex webhook POST bodies
+4. /webhook — receives Webex message → checks if user has a valid Snowflake token
+   → if not: stores question in pendingQuestions, sends login link in DM
+   → if yes: calls askCortexAsUser() with their token, replies with answer
 
-5. /webhook route (new) — the core bot logic:
-    - Receives Webex event → fetches full message text from Webex API (webhook only 
-  sends message ID)
-    - Skips bot's own messages (checks both personId and personEmail ending in      
-  @webex.bot)
-    - Calls askCortex() with the user's question
-    - Truncates answer if >6500 chars
-    - Posts answer back to Webex using WEBEX_BOT_TOKEN
-6. Startup flow changed — app now connects to Snowflake first, and only starts    
-  Express if connection succeeds (exits on failure)
+5. getValidToken() — returns a valid token. If expired, attempts a refresh using
+   the refresh token. Clears the token and forces re-auth if refresh fails.
 
-Everything else (OAuth routes /login/webex, /login/snowflake, /callback, PKCE     
-  logic) remained unchanged from the original.
+6. askCortexAsUser() — creates a short-lived per-user Snowflake connection using
+   authenticator: oauth. The user's own role and default warehouse are applied
+   automatically — no hardcoded service account or warehouse.
+
+7. /login/snowflake — starts Snowflake OAuth with PKCE S256. Accepts
+   ?webex_person_id= so the callback can link the token to the right Webex user.
+
+8. /callback — after Snowflake token exchange: stores token in userTokenStore,
+   then checks pendingQuestions and answers any queued question automatically.
+   Shows a "You can close this tab" success page to the user.
+
+9. /login/webex — Webex OAuth flow (state=webex), separate from bot auth.
 ```
 
 ---
@@ -246,9 +254,9 @@ Webex webhooks need a public HTTPS URL to reach your local app.
 ngrok http 3000
 ```
 
-Copy the `https://` forwarding URL (e.g. `https://abc123.ngrok-free.app`).
+Copy the `https://` forwarding URL → set as `APP_BASE_URL` in `.env`.
 
-> **Note:** ngrok free tier gives a new URL on every restart — you must re-register the Webex webhook each time.
+> **Note:** ngrok free tier gives a new URL on every restart — update `APP_BASE_URL` in `.env` and re-register the Webex webhook each time.
 
 ---
 
@@ -260,14 +268,11 @@ node main.js
 
 Expected output:
 ```
-Connected to Snowflake
 Server running on http://localhost:3000
   Webex login     -> http://localhost:3000/login/webex
   Snowflake login -> http://localhost:3000/login/snowflake
   Webhook         -> POST http://localhost:3000/webhook
 ```
-
-If Snowflake connection fails the app exits — fix credentials before proceeding.
 
 ---
 
@@ -275,10 +280,25 @@ If Snowflake connection fails the app exits — fix credentials before proceedin
 
 ```powershell
 $token = "<your_bot_token>"
-Invoke-RestMethod -Method Post -Uri "https://webexapis.com/v1/webhooks" -Headers @{"Authorization" = "Bearer $token"; "Content-Type" = "application/json"} -Body '{"name":"snowflake-cortex-bot","targetUrl":"https://<your-ngrok-url>/webhook","resource":"messages","event":"created"}'
+$url = "https://<your-ngrok-url>/webhook"
+Invoke-RestMethod -Method Post -Uri "https://webexapis.com/v1/webhooks" -Headers @{"Authorization" = "Bearer $token"; "Content-Type" = "application/json"} -Body "{`"name`":`"snowflake-cortex-bot`",`"targetUrl`":`"$url`",`"resource`":`"messages`",`"event`":`"created`"}"
 ```
 
 Response should include `status: active`.
+
+### If you get 409 Conflict (duplicate webhook)
+
+```powershell
+# List existing webhooks
+$webhooks = Invoke-RestMethod -Method Get -Uri "https://webexapis.com/v1/webhooks" -Headers @{"Authorization" = "Bearer $token"}
+$webhooks.items | Select-Object id, name, targetUrl
+
+# Delete the old one
+$id = $webhooks.items[0].id
+Invoke-RestMethod -Method Delete -Uri "https://webexapis.com/v1/webhooks/$id" -Headers @{"Authorization" = "Bearer $token"}
+```
+
+Then re-run the registration command above.
 
 ---
 
@@ -289,10 +309,14 @@ Response should include `status: active`.
 1. Open Webex
 2. Search for the bot by email: `snowflake_intel@webex.bot`
 3. Send any message (e.g. `"What is Snowflake Cortex?"`)
-4. Watch the terminal for `[webhook]` logs
-5. Bot replies in Webex within a few seconds
+4. Bot replies: **"Snowflake authentication required. [Sign in to Snowflake]"**
+5. Click the link → sign in with your Snowflake username/password (dev) or SSO (prod)
+6. Browser shows: *"Authenticated as username ✓ — You can close this tab"*
+7. Answer appears in Webex automatically — no need to retype the question
 
-### Test OAuth flows
+On subsequent messages the bot answers directly (token is cached and auto-refreshed).
+
+### Test OAuth flows manually
 
 | URL | What it tests |
 |---|---|
@@ -338,10 +362,10 @@ snowsql -a lqb16037 -u <YOUR_USER> --authenticator oauth --token "<snowflake_acc
 
 | Route | Method | Description |
 |---|---|---|
-| `/webhook` | POST | Receives Webex messages, calls Cortex, replies |
+| `/webhook` | POST | Receives Webex messages, authenticates user, calls Cortex, replies |
 | `/login/webex` | GET | Starts Webex OAuth flow |
-| `/login/snowflake` | GET | Starts Snowflake OAuth flow (PKCE / S256) |
-| `/callback` | GET | Shared OAuth callback for both providers |
+| `/login/snowflake` | GET | Starts Snowflake OAuth flow (PKCE / S256); accepts `?webex_person_id=` |
+| `/callback` | GET | Shared OAuth callback; answers queued question after Snowflake login |
 
 ---
 
@@ -349,7 +373,9 @@ snowsql -a lqb16037 -u <YOUR_USER> --authenticator oauth --token "<snowflake_acc
 
 | Issue | Fix |
 |---|---|
-| `No active warehouse selected` | `GRANT USAGE ON WAREHOUSE DBT_HANDSON TO ROLE PUBLIC` |
 | Bot replies to itself (infinite loop) | Ensure `BOT_ID` is the Person ID from `GET /people/me`, not the Application ID |
-| Webhook not receiving messages | Re-register webhook after ngrok restarts — URL changes every time |
-| `Object does not exist` on connect | Warehouse not granted to the service account role |
+| Login link in Webex DM doesn't open | `APP_BASE_URL` must be the ngrok URL, not `localhost` |
+| Webhook not receiving messages | Re-register webhook after ngrok restarts — URL changes every time; also update `APP_BASE_URL` |
+| User gets auth prompt on every message | Token refresh failed — check `SNOWFLAKE_CLIENT_SECRET` and that `OAUTH_ISSUE_REFRESH_TOKENS = TRUE` in the Security Integration |
+| `Object does not exist` on Cortex query | User's role lacks `USAGE` on their warehouse — run `GRANT USAGE ON WAREHOUSE <wh> TO ROLE <role>` |
+| 409 Conflict on webhook registration | Webhook already exists — list, delete, then re-register (see Part 8) |
