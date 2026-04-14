@@ -101,6 +101,16 @@ GRANT USAGE ON WAREHOUSE DBT_HANDSON TO ROLE PUBLIC;
 > **Dev:** users sign in with their Snowflake username and password through the OAuth consent page.
 > **Prod:** replace username/password with your org's SSO / MFA — no code changes needed, the OAuth flow handles it.
 
+### What happened to `webex_bot_user`?
+
+If you set up a `webex_bot_user` service account from a previous version, it is no longer used by the app. You can drop it:
+
+```sql
+DROP USER webex_bot_user;
+```
+
+It is safe to leave it if you prefer, but it serves no purpose in the current architecture.
+
 ### Optional: Map Snowflake users to Webex identity
 
 ```sql
